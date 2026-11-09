@@ -18,6 +18,10 @@ function getCourseById(id: number) {
   return db.select().from(courses).where(eq(courses.id, id)).get();
 }
 
+// A refunded Seat is dead: its Seat Code never works again.
+const SEAT_REFUNDED_MESSAGE =
+  "This Seat was refunded, so its Seat Code no longer works.";
+
 function getSeatByCode(code: string) {
   return db.select().from(seats).where(eq(seats.code, code)).get();
 }
@@ -46,6 +50,10 @@ function claimSeat(
   const seat = getSeatByCode(code);
   if (!seat) {
     return { ok: false, error: "Seat Code not found" };
+  }
+
+  if (seat.refundedAt !== null) {
+    return { ok: false, error: SEAT_REFUNDED_MESSAGE };
   }
 
   if (seat.claimedByUserId !== null) {
@@ -120,6 +128,10 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   const seat = getSeatByCode(code);
   if (!seat) {
     throw data("Seat Code not found.", { status: 404 });
+  }
+
+  if (seat.refundedAt !== null) {
+    throw data(SEAT_REFUNDED_MESSAGE, { status: 410 });
   }
 
   const currentUserId = await getCurrentUserId(request);

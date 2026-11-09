@@ -73,6 +73,7 @@ async function seed() {
     DROP TABLE IF EXISTS quiz_questions;
     DROP TABLE IF EXISTS quizzes;
     DROP TABLE IF EXISTS lesson_progress;
+    DROP TABLE IF EXISTS refund_request_seats;
     DROP TABLE IF EXISTS seats;
     DROP TABLE IF EXISTS coupons;
     DROP TABLE IF EXISTS team_members;

@@ -3,11 +3,14 @@ import { z } from "zod";
 import type { Route } from "./+types/courses.$slug.refund";
 import { getCurrentUserId } from "~/lib/session";
 import { db } from "~/db";
-import { courses, refunds, users, RefundStatus } from "~/db/schema";
+import { courses, users } from "~/db/schema";
 import { eq } from "drizzle-orm";
 import { parseFormData, parseParams } from "~/lib/validation";
 import { formatPrice } from "~/lib/utils";
-import { getRefundEligibility } from "~/lib/refunds.server";
+import {
+  createRefundRequest,
+  getRefundEligibility,
+} from "~/lib/refunds.server";
 
 const refundParamsSchema = z.object({
   slug: z.string().min(1),
@@ -96,13 +99,7 @@ export async function action({ params, request }: Route.ActionArgs) {
     return data({ errors: parsed.errors }, { status: 400 });
   }
 
-  db.insert(refunds)
-    .values({
-      purchaseId: purchase.id,
-      status: RefundStatus.Requested,
-      reason: parsed.data.reason,
-    })
-    .run();
+  createRefundRequest({ purchaseId: purchase.id, reason: parsed.data.reason });
 
   const email = buildRefundRequestEmail({
     studentName: student.name,

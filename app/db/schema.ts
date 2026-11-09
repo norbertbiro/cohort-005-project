@@ -289,10 +289,32 @@ export const seats = sqliteTable("seats", {
     .references(() => purchases.id),
   claimedByUserId: integer("claimed_by_user_id").references(() => users.id),
   claimedAt: text("claimed_at"),
+  // Set when a Refund for this Seat is approved. A refunded Seat can never be
+  // claimed again.
+  refundedAt: text("refunded_at"),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
 });
+
+// The Seats a Refund Request for a Team Purchase covers. A Refund Request for
+// a single Purchase has no rows here.
+export const refundRequestSeats = sqliteTable(
+  "refund_request_seats",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    refundId: integer("refund_id")
+      .notNull()
+      .references(() => refunds.id),
+    seatId: integer("seat_id")
+      .notNull()
+      .references(() => seats.id),
+  },
+  (table) => [
+    index("refund_request_seats_refund_idx").on(table.refundId),
+    index("refund_request_seats_seat_idx").on(table.seatId),
+  ]
+);
 
 export const courseRatings = sqliteTable(
   "course_ratings",
