@@ -38,7 +38,7 @@ export enum RefundStatus {
 }
 
 export enum TeamMemberRole {
-  Admin = "admin",
+  TeamAdmin = "team_admin",
   Member = "member",
 }
 
@@ -240,7 +240,7 @@ export const refunds = sqliteTable(
       .notNull()
       .$type<RefundStatus>()
       .default(RefundStatus.Requested),
-    // The learner's own words, in the box on the course page.
+    // The Student's own words, in the box on the course page.
     reason: text("reason").notNull(),
     // Null until someone approves — a declined request refunds nothing.
     amountRefunded: integer("amount_refunded"),
@@ -274,7 +274,8 @@ export const teamMembers = sqliteTable("team_members", {
     .$defaultFn(() => new Date().toISOString()),
 });
 
-export const coupons = sqliteTable("coupons", {
+// A Seat is one place in a Team Purchase. Its code is the Seat Code.
+export const seats = sqliteTable("seats", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   teamId: integer("team_id")
     .notNull()
@@ -286,12 +287,34 @@ export const coupons = sqliteTable("coupons", {
   purchaseId: integer("purchase_id")
     .notNull()
     .references(() => purchases.id),
-  redeemedByUserId: integer("redeemed_by_user_id").references(() => users.id),
-  redeemedAt: text("redeemed_at"),
+  claimedByUserId: integer("claimed_by_user_id").references(() => users.id),
+  claimedAt: text("claimed_at"),
+  // Set when a Refund for this Seat is approved. A refunded Seat can never be
+  // claimed again.
+  refundedAt: text("refunded_at"),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
 });
+
+// The Seats a Refund Request for a Team Purchase covers. A Refund Request for
+// a single Purchase has no rows here.
+export const refundRequestSeats = sqliteTable(
+  "refund_request_seats",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    refundId: integer("refund_id")
+      .notNull()
+      .references(() => refunds.id),
+    seatId: integer("seat_id")
+      .notNull()
+      .references(() => seats.id),
+  },
+  (table) => [
+    index("refund_request_seats_refund_idx").on(table.refundId),
+    index("refund_request_seats_seat_idx").on(table.seatId),
+  ]
+);
 
 export const courseRatings = sqliteTable(
   "course_ratings",

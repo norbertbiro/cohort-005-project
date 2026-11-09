@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { Link } from "react-router";
+import { useEffect, useState } from "react";
+import { Link, useFetcher } from "react-router";
+import { toast } from "sonner";
 import type { Route } from "./+types/team";
 import { getCurrentUserId } from "~/lib/session";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
@@ -10,21 +11,28 @@ import { db } from "~/db";
 import {
   teams,
   teamMembers,
-  coupons,
+  seats,
   courses,
   users,
   TeamMemberRole,
 } from "~/db/schema";
 import { eq, and } from "drizzle-orm";
+import { Textarea } from "~/components/ui/textarea";
+import { formatPrice } from "~/lib/utils";
+import { seatRefundAmount } from "~/lib/refunds";
+import {
+  getTeamRefundOptions,
+  type TeamPurchaseRefundOptions,
+} from "~/lib/refunds.server";
 
-function getTeamForAdmin(userId: number) {
+function getTeamForTeamAdmin(userId: number) {
   const membership = db
     .select()
     .from(teamMembers)
     .where(
       and(
         eq(teamMembers.userId, userId),
-        eq(teamMembers.role, TeamMemberRole.Admin)
+        eq(teamMembers.role, TeamMemberRole.TeamAdmin)
       )
     )
     .get();
@@ -34,8 +42,8 @@ function getTeamForAdmin(userId: number) {
   return db.select().from(teams).where(eq(teams.id, membership.teamId)).get();
 }
 
-function getCouponsForTeam(teamId: number) {
-  return db.select().from(coupons).where(eq(coupons.teamId, teamId)).all();
+function getSeatsForTeam(teamId: number) {
+  return db.select().from(seats).where(eq(seats.teamId, teamId)).all();
 }
 
 function getCourseById(id: number) {
@@ -54,12 +62,13 @@ interface CourseStats {
   claimedSeats: number;
 }
 
-interface CouponRow {
+interface SeatRow {
   id: number;
   code: string;
   courseId: number;
   courseTitle: string;
-  redeemedByEmail: string | null;
+  claimedByEmail: string | null;
+  isRefunded: boolean;
   createdAt: string;
 }
 
@@ -77,7 +86,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     throw data("Select a user from the DevUI panel.", { status: 401 });
   }
 
-  const team = getTeamForAdmin(currentUserId);
+  const team = getTeamForTeamAdmin(currentUserId);
 
   if (!team) {
     throw data("You don't have a team. Purchase team seats to create one.", {
@@ -85,7 +94,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     });
   }
 
-  const allCoupons = getCouponsForTeam(team.id);
+  const allSeats = getSeatsForTeam(team.id);
 
   // Build per-course stats
   const courseMap = new Map<
@@ -99,20 +108,21 @@ export async function loader({ request }: Route.LoaderArgs) {
     }
   >();
 
-  for (const coupon of allCoupons) {
-    if (!courseMap.has(coupon.courseId)) {
-      const course = getCourseById(coupon.courseId);
-      courseMap.set(coupon.courseId, {
-        courseId: coupon.courseId,
+  // A refunded Seat no longer counts towards the team's Seats.
+  for (const seat of allSeats.filter((s) => s.refundedAt === null)) {
+    if (!courseMap.has(seat.courseId)) {
+      const course = getCourseById(seat.courseId);
+      courseMap.set(seat.courseId, {
+        courseId: seat.courseId,
         courseTitle: course?.title ?? "Unknown Course",
         courseSlug: course?.slug ?? "",
         total: 0,
         claimed: 0,
       });
     }
-    const entry = courseMap.get(coupon.courseId)!;
+    const entry = courseMap.get(seat.courseId)!;
     entry.total++;
-    if (coupon.redeemedByUserId !== null) {
+    if (seat.claimedByUserId !== null) {
       entry.claimed++;
     }
   }
@@ -127,32 +137,37 @@ export async function loader({ request }: Route.LoaderArgs) {
     })
   );
 
-  // Build coupon rows with redeemer email
-  const couponRows: CouponRow[] = allCoupons.map((coupon) => {
-    let redeemedByEmail: string | null = null;
-    if (coupon.redeemedByUserId !== null) {
-      const user = getUserById(coupon.redeemedByUserId);
-      redeemedByEmail = user?.email ?? null;
+  // Build seat rows with claimer email
+  const seatRows: SeatRow[] = allSeats.map((seat) => {
+    let claimedByEmail: string | null = null;
+    if (seat.claimedByUserId !== null) {
+      const user = getUserById(seat.claimedByUserId);
+      claimedByEmail = user?.email ?? null;
     }
-    const course = getCourseById(coupon.courseId);
+    const course = getCourseById(seat.courseId);
     return {
-      id: coupon.id,
-      code: coupon.code,
-      courseId: coupon.courseId,
+      id: seat.id,
+      code: seat.code,
+      courseId: seat.courseId,
       courseTitle: course?.title ?? "Unknown Course",
-      redeemedByEmail,
-      createdAt: coupon.createdAt,
+      claimedByEmail,
+      isRefunded: seat.refundedAt !== null,
+      createdAt: seat.createdAt,
     };
   });
 
-  return { courseStats, couponRows };
+  return {
+    courseStats,
+    seatRows,
+    refundOptions: getTeamRefundOptions(team.id),
+  };
 }
 
 function CopyButton({ code }: { code: string }) {
   const [copied, setCopied] = useState(false);
 
   function handleCopy() {
-    const url = `${window.location.origin}/redeem/${code}`;
+    const url = `${window.location.origin}/claim/${code}`;
     navigator.clipboard.writeText(url).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
@@ -163,7 +178,7 @@ function CopyButton({ code }: { code: string }) {
     <button
       onClick={handleCopy}
       className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10 transition-colors"
-      title="Copy redemption link"
+      title="Copy claim link"
     >
       {copied ? (
         <>
@@ -181,13 +196,13 @@ function CopyButton({ code }: { code: string }) {
 }
 
 export default function Team({ loaderData }: Route.ComponentProps) {
-  const { courseStats, couponRows } = loaderData;
+  const { courseStats, seatRows, refundOptions } = loaderData;
   const [courseFilter, setCourseFilter] = useState<number | "all">("all");
 
-  const filteredCoupons =
+  const filteredSeats =
     courseFilter === "all"
-      ? couponRows
-      : couponRows.filter((c) => c.courseId === courseFilter);
+      ? seatRows
+      : seatRows.filter((c) => c.courseId === courseFilter);
 
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
@@ -202,7 +217,7 @@ export default function Team({ loaderData }: Route.ComponentProps) {
       <div className="mb-8">
         <h1 className="text-3xl font-bold">Team Management</h1>
         <p className="mt-1 text-muted-foreground">
-          Manage your team&apos;s course seats and coupon codes
+          Manage your team&apos;s course Seats and Seat Codes
         </p>
       </div>
 
@@ -243,10 +258,10 @@ export default function Team({ loaderData }: Route.ComponentProps) {
         </div>
       )}
 
-      {/* Coupon list */}
+      {/* Seat list */}
       <div>
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Coupons</h2>
+          <h2 className="text-lg font-semibold">Seats</h2>
           {courseStats.length > 1 && (
             <select
               value={courseFilter}
@@ -267,8 +282,8 @@ export default function Team({ loaderData }: Route.ComponentProps) {
           )}
         </div>
 
-        {filteredCoupons.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No coupons yet.</p>
+        {filteredSeats.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No Seats yet.</p>
         ) : (
           <div className="overflow-x-auto rounded-md border">
             <table className="w-full text-sm">
@@ -281,20 +296,24 @@ export default function Team({ loaderData }: Route.ComponentProps) {
                 </tr>
               </thead>
               <tbody>
-                {filteredCoupons.map((coupon) => (
-                  <tr key={coupon.id} className="border-b last:border-0">
+                {filteredSeats.map((seat) => (
+                  <tr key={seat.id} className="border-b last:border-0">
                     <td className="px-4 py-3">
                       <code className="rounded bg-muted px-2 py-0.5 text-xs">
-                        {coupon.code}
+                        {seat.code}
                       </code>
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
-                      {coupon.courseTitle}
+                      {seat.courseTitle}
                     </td>
                     <td className="px-4 py-3">
-                      {coupon.redeemedByEmail ? (
+                      {seat.isRefunded ? (
+                        <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                          Refunded
+                        </span>
+                      ) : seat.claimedByEmail ? (
                         <span className="text-muted-foreground">
-                          Claimed by {coupon.redeemedByEmail}
+                          Claimed by {seat.claimedByEmail}
                         </span>
                       ) : (
                         <span className="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-400">
@@ -303,8 +322,8 @@ export default function Team({ loaderData }: Route.ComponentProps) {
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      {!coupon.redeemedByEmail && (
-                        <CopyButton code={coupon.code} />
+                      {!seat.claimedByEmail && !seat.isRefunded && (
+                        <CopyButton code={seat.code} />
                       )}
                     </td>
                   </tr>
@@ -314,7 +333,133 @@ export default function Team({ loaderData }: Route.ComponentProps) {
           </div>
         )}
       </div>
+
+      {refundOptions.length > 0 && (
+        <div className="mt-10 space-y-4">
+          <div>
+            <h2 className="text-lg font-semibold">Request a refund</h2>
+            <p className="text-sm text-muted-foreground">
+              Pick the Seats you want to hand back. A Seat can be refunded
+              within 14 days of the Purchase, if its Student has watched under
+              2 hours and completed under half the lessons.
+            </p>
+          </div>
+          {refundOptions.map((options) => (
+            <RequestSeatRefund key={options.purchaseId} options={options} />
+          ))}
+        </div>
+      )}
     </div>
+  );
+}
+
+function RequestSeatRefund({
+  options,
+}: {
+  options: TeamPurchaseRefundOptions;
+}) {
+  const fetcher = useFetcher<{ errors?: Record<string, string> }>();
+  const [picked, setPicked] = useState<Set<number>>(new Set());
+  const isSubmitting = fetcher.state !== "idle";
+
+  useEffect(() => {
+    if (fetcher.state !== "idle") return;
+    const firstError = Object.values(fetcher.data?.errors ?? {})[0];
+    if (firstError) {
+      toast.error(firstError);
+    } else {
+      // Sent: the Seats are now in an open Refund Request.
+      setPicked(new Set());
+    }
+  }, [fetcher.state, fetcher.data]);
+
+  const eligibleCount = options.seats.filter(
+    (seat) => seat.eligibility.eligible
+  ).length;
+
+  const amount = seatRefundAmount({
+    amountPaid: options.amountPaid,
+    totalSeats: options.totalSeats,
+    alreadyRefundedSeats: options.refundedSeats,
+    count: picked.size,
+  });
+
+  function toggle(seatId: number) {
+    setPicked((current) => {
+      const next = new Set(current);
+      if (next.has(seatId)) next.delete(seatId);
+      else next.add(seatId);
+      return next;
+    });
+  }
+
+  return (
+    <Card>
+      <CardContent className="p-5">
+        <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="font-semibold">{options.courseTitle}</h3>
+          <span className="text-xs text-muted-foreground">
+            Bought {new Date(options.purchasedAt).toLocaleDateString()} ·{" "}
+            {options.totalSeats} Seats · {formatPrice(options.amountPaid)}
+          </span>
+        </div>
+        {eligibleCount === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            None of these Seats can be refunded.
+          </p>
+        ) : null}
+        <fetcher.Form method="post" action="/team/refund" className="space-y-3">
+          <input type="hidden" name="purchaseId" value={options.purchaseId} />
+          <ul className="divide-y rounded-md border text-sm">
+            {options.seats.map((seat) => (
+              <li key={seat.seatId} className="flex items-center gap-3 px-3 py-2">
+                <input
+                  type="checkbox"
+                  name="seatId"
+                  value={seat.seatId}
+                  disabled={!seat.eligibility.eligible}
+                  checked={picked.has(seat.seatId)}
+                  onChange={() => toggle(seat.seatId)}
+                  aria-label={`Refund Seat ${seat.code}`}
+                />
+                <code className="rounded bg-muted px-2 py-0.5 text-xs">
+                  {seat.code}
+                </code>
+                <span className="text-muted-foreground">
+                  {seat.claimedByEmail ?? "Unclaimed"}
+                </span>
+                {!seat.eligibility.eligible && (
+                  <span className="ml-auto text-xs text-muted-foreground">
+                    {seat.eligibility.label}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+          {eligibleCount > 0 && (
+            <>
+              <Textarea
+                name="reason"
+                rows={3}
+                required
+                placeholder="Why do you want these Seats refunded?"
+              />
+              <Button
+                type="submit"
+                size="sm"
+                disabled={isSubmitting || picked.size === 0}
+              >
+                {isSubmitting
+                  ? "Sending..."
+                  : picked.size === 0
+                    ? "Pick Seats to refund"
+                    : `Request a refund of ${formatPrice(amount)} for ${picked.size} ${picked.size === 1 ? "Seat" : "Seats"}`}
+              </Button>
+            </>
+          )}
+        </fetcher.Form>
+      </CardContent>
+    </Card>
   );
 }
 
