@@ -1,7 +1,7 @@
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { db } from "~/db";
 import {
-  coupons,
+  seats,
   lessonProgress,
   lessons,
   modules,
@@ -88,10 +88,10 @@ function hasOpenRefundRequest(purchaseId: number) {
 
 function hasClaimedSeat(purchaseId: number) {
   const claimed = db
-    .select({ id: coupons.id })
-    .from(coupons)
+    .select({ id: seats.id })
+    .from(seats)
     .where(
-      and(eq(coupons.purchaseId, purchaseId), isNotNull(coupons.redeemedAt))
+      and(eq(seats.purchaseId, purchaseId), isNotNull(seats.claimedAt))
     )
     .get();
   return claimed !== undefined;

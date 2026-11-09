@@ -27,14 +27,14 @@ function getUserById(id: number) {
   return db.select().from(users).where(eq(users.id, id)).get();
 }
 
-function getTeamForAdmin(userId: number) {
+function getTeamForTeamAdmin(userId: number) {
   const membership = db
     .select()
     .from(teamMembers)
     .where(
       and(
         eq(teamMembers.userId, userId),
-        eq(teamMembers.role, TeamMemberRole.Admin)
+        eq(teamMembers.role, TeamMemberRole.TeamAdmin)
       )
     )
     .get();
@@ -45,7 +45,7 @@ function getTeamForAdmin(userId: number) {
 }
 
 function isTeamAdmin(userId: number) {
-  return !!getTeamForAdmin(userId);
+  return !!getTeamForTeamAdmin(userId);
 }
 
 function getCourseLessonIds(courseId: number): number[] {
